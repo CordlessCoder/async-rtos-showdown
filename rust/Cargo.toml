@@ -1,18 +1,31 @@
 [package]
 name = "blog-async-test"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cortex-m = "0.7.4"
-cortex-m-rt = "0.7.1"
-embassy = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", branch = "master" }
-embassy-traits = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", branch = "master" }
-embassy-stm32 = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", branch = "master", features = ["nightly", "stm32f446ze", "unstable-pac", "memory-x", "time-driver-tim2", "exti"]  }
-embedded-hal = "0.2.7"
-arrayvec = { version = "0.7.2", default-features = false }
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core", "inline-asm", "linker-plugin-lto"] }
+cortex-m-rt = { version = "0.7.5", features = [] }
+embedded-hal = "1.0.0"
+arrayvec = { version = "0.7.7", default-features = false }
+# embassy-sync = "0.8.0"
+# embassy-stm32 = { version = "0.6.0", features = ["stm32u575zi", "unstable-pac", "memory-x", "exti", "time-driver-tim4", "executor-thread", "time", "low-power"], path = "../../embassy/embassy-stm32" }
+# embassy-executor = { version = "0.10.0", features = ["nightly"], path = "../../embassy/embassy-executor" }
+# embassy-time = { version = "0.5.1", features = [], path = "../../embassy/embassy-time" }
+embassy-stm32 = { version = "0.6.0", features = ["stm32u575zi", "unstable-pac", "memory-x", "exti", "time-driver-tim4", "executor-thread", "time", "low-power", "unchecked-overclocking"], git = "https://github.com/embassy-rs/embassy"  }
+embassy-executor = { version = "0.10.0", features = ["nightly"], git = "https://github.com/embassy-rs/embassy"  }
+embassy-time = { version = "0.5.1", features = [], git = "https://github.com/embassy-rs/embassy" }
+embassy-sync = { version = "0.8.0", git = "https://github.com/embassy-rs/embassy" }
+static_cell = { version = "2.1.1", features = ["nightly"] }
+embassy-futures = "0.1.2"
+defmt = "1.1.0"
+defmt-rtt = "1.2.0"
+panic-probe = { version = "1.0.0", features = ["defmt", "print-rtt"] }
+
+[profile.dev]
+debug = true
 
 [profile.release]
 debug = true

@@ -1,10 +1,11 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-run --chip STM32F446ZETX"
+runner = "probe-rs run --chip STM32U575ZI"
 
 rustflags = [
   # LLD (shipped with the Rust toolchain) is used as the default linker
-  # "-C", "link-arg=--nmagic",
+  "-C", "link-arg=--nmagic",
   "-C", "link-arg=-Tlink.x",
+  "-C", "link-arg=-Tdefmt.x",
 
   # # Code-size optimizations.
   # "-Z", "trap-unreachable=no",
@@ -13,4 +14,4 @@ rustflags = [
 ]
 
 [build]
-target = "thumbv7em-none-eabihf"
+target = "thumbv8m.main-none-eabihf"
