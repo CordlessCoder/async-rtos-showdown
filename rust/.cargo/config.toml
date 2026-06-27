@@ -1,17 +1,24 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip STM32U575ZI"
+runner = "probe-rs run --chip STM32L053R8"
 
 rustflags = [
   # LLD (shipped with the Rust toolchain) is used as the default linker
   "-C", "link-arg=--nmagic",
   "-C", "link-arg=-Tlink.x",
-  "-C", "link-arg=-Tdefmt.x",
+  "-C", "link-arg=--gc-sections",
+  # "-C", "link-arg=-Tdefmt.x",
 
-  # # Code-size optimizations.
+  # Code-size optimizations.
   # "-Z", "trap-unreachable=no",
-  # "-C", "inline-threshold=5",
+  "-C", "llvm-args=--inline-threshold=5",
   # "-C", "no-vectorize-loops",
+  # "-Zlocation-detail=none",
+  # "-Zfmt-debug=none"
 ]
 
 [build]
-target = "thumbv8m.main-none-eabihf"
+target = "thumbv6m-none-eabi"
+
+[unstable]
+build-std = ["core", "panic_abort"]
+build-std-features = ["optimize_for_size"]

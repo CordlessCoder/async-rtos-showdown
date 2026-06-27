@@ -1,13 +1,11 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(type_alias_impl_trait)]
 #![allow(static_mut_refs)]
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use arrayvec::ArrayString;
-use defmt::println;
+use arrayvec::ArrayVec;
 use embassy_executor::Spawner;
 use embassy_stm32::dma;
 use embassy_stm32::exti::ExtiInput;
@@ -19,52 +17,98 @@ use embassy_stm32::{Config, bind_interrupts, exti, interrupt};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::zerocopy_channel::{self};
 use embassy_time::{Duration, Ticker};
-use static_cell::make_static;
-use {defmt_rtt as _, panic_probe as _};
+// use {defmt_rtt as _, panic_probe as _};
+// use defmt::println;
 
 bind_interrupts!(struct Irqs {
-    EXTI13 => exti::InterruptHandler<interrupt::typelevel::EXTI13>;
-    USART1 => usart::InterruptHandler<peripherals::USART1>;
-    GPDMA1_CHANNEL0 => dma::InterruptHandler<peripherals::GPDMA1_CH0>;
-    GPDMA1_CHANNEL1 => dma::InterruptHandler<peripherals::GPDMA1_CH1>;
+    EXTI4_15 => exti::InterruptHandler<interrupt::typelevel::EXTI4_15>;
+    USART2 => usart::InterruptHandler<peripherals::USART2>;
+    DMA1_CHANNEL4_5_6_7 =>
+        dma::InterruptHandler<peripherals::DMA1_CH4>,
+        dma::InterruptHandler<peripherals::DMA1_CH5>;
     // TIM4 => embassy_stm32::timer::UpdateInterruptHandler<peripherals::TIM4>;
 });
 
-static mut UART_QUEUE_BUF: [ArrayString<32>; 8] = [ArrayString::new_const(); _];
-static BUTTON_PRESSED: AtomicBool = AtomicBool::new(false);
+type Buf = ArrayVec<u8, 32>;
+type UartChannel = zerocopy_channel::Channel<'static, NoopRawMutex, Buf>;
 
-#[embassy_executor::main(
-    executor = "embassy_stm32::executor::Executor",
-    entry = "cortex_m_rt::entry"
-)]
-async fn main(spawner: Spawner) {
-    let mut config = Config::default();
+static BUTTON_HIGH: AtomicBool = AtomicBool::new(false);
+
+#[inline(always)]
+fn main(spawner: Spawner, channel: &'static mut UartChannel) {
+    let config = Config::default();
     let peri = embassy_stm32::init(config);
 
-    let led1 = Output::new(peri.PC7, Level::Low, Speed::VeryHigh);
+    let led1 = Output::new(peri.PA5, Level::Low, Speed::VeryHigh);
     let button = ExtiInput::new(peri.PC13, peri.EXTI13, Pull::None, Irqs);
-    let usart = Uart::new(
-        peri.USART1,
-        peri.PA10,
-        peri.PA9,
-        peri.GPDMA1_CH0,
-        peri.GPDMA1_CH1,
-        Irqs,
-        usart::Config::default(),
-    )
-    .unwrap();
+    let usart = unsafe {
+        Uart::new(
+            peri.USART2,
+            peri.PA3,
+            peri.PA2,
+            peri.DMA1_CH4,
+            peri.DMA1_CH5,
+            Irqs,
+            usart::Config::default(),
+        )
+        .unwrap_unchecked()
+    };
 
+    let button_processed = Output::new(peri.PB7, Level::Low, Speed::VeryHigh);
 
-    let button_processed = Output::new(peri.PF14, Level::Low, Speed::VeryHigh);
+    let (sender, receiver) = channel.split();
 
-    let (sender, receiver) = make_static!(
-        zerocopy_channel::Channel::<'static, NoopRawMutex, _>::new(unsafe { &mut UART_QUEUE_BUF })
-    )
-    .split();
-
-    spawner.spawn(blink_led(led1, &BUTTON_PRESSED).unwrap());
+    spawner.spawn(blink_led(led1, &BUTTON_HIGH).unwrap());
     spawner.spawn(uart_writer(usart, receiver).unwrap());
-    spawner.spawn(button_waiter(button, &BUTTON_PRESSED, sender, button_processed).unwrap());
+    spawner.spawn(button_waiter(button, &BUTTON_HIGH, sender, button_processed).unwrap());
+}
+
+#[cortex_m_rt::entry]
+/// SAFETY: Must only be called at most once
+unsafe fn entry() -> ! {
+    /// SAFETY: None
+    #[inline(always)]
+    unsafe fn make_static<T>(val: &mut T) -> &'static mut T {
+        unsafe { core::mem::transmute(val) }
+    }
+
+    static mut UART_MSG_BUF: [Buf; 8] = [const { Buf::new_const() }; _];
+    let mut channel =
+        zerocopy_channel::Channel::<'static, NoopRawMutex, _>::new(unsafe { &mut UART_MSG_BUF });
+    let channel = unsafe { make_static(&mut channel) };
+
+    #[cfg(feature = "use-thread-executor")]
+    {
+        let mut executor = embassy_stm32::executor::Executor::new();
+        let executor = unsafe { make_static(&mut executor) };
+        executor.run(|s| main(s, channel));
+    }
+    #[cfg(not(feature = "use-thread-executor"))]
+    {
+        use embassy_stm32::executor::InterruptExecutor;
+        use embassy_stm32::interrupt::InterruptExt;
+
+        static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
+
+        /// LSD ISR → poll the executor. The peripheral itself is unused; we only borrow its interrupt vector as the executor's pend line
+        #[interrupt]
+        unsafe fn LCD() {
+            unsafe {
+                EXECUTOR.on_interrupt();
+            }
+        }
+
+        interrupt::LCD.set_priority(interrupt::Priority::P7);
+        let spawner = EXECUTOR.start(interrupt::LCD);
+        // SAFETY: Sound ONLY if there is only 1 executor running
+        let spawner: Spawner = unsafe { core::mem::transmute(spawner) };
+        main(spawner, channel);
+        loop {
+            critical_section::with(|cs| unsafe {
+                embassy_stm32::low_power::sleep(cs);
+            });
+        }
+    }
 }
 
 #[embassy_executor::task]
@@ -72,7 +116,7 @@ async fn blink_led(mut led: Output<'static>, button_high: &'static AtomicBool) {
     let mut ticker = Ticker::every(Duration::from_millis(100));
     loop {
         ticker.next().await;
-        if !button_high.load(Ordering::SeqCst) {
+        if button_high.load(Ordering::SeqCst) {
             led.set_high();
         }
         ticker.next().await;
@@ -84,27 +128,24 @@ async fn blink_led(mut led: Output<'static>, button_high: &'static AtomicBool) {
 async fn button_waiter(
     mut button: ExtiInput<'static, Async>,
     button_pressed: &'static AtomicBool,
-    mut sender: zerocopy_channel::Sender<'static, NoopRawMutex, ArrayString<32>>,
+    mut sender: zerocopy_channel::Sender<'static, NoopRawMutex, Buf>,
     mut button_processed: Output<'static>,
 ) {
     let mut trigger_count = 0;
 
-    fn format_message(buf: &mut ArrayString<32>, trigger_count: i32, button_pressed: bool) {
-        use core::fmt::Write;
-
+    fn format_message(buf: &mut Buf, trigger_count: u32, button_pressed: bool) {
         buf.clear();
-        core::writeln!(
-            buf,
-            "Button is {} ({})\n",
-            button_pressed as i32,
-            trigger_count,
-        )
-        .unwrap();
+        unsafe {
+            buf.try_extend_from_slice(b"Button is ").unwrap_unchecked();
+
+            buf.push(b'0' + button_pressed as u8);
+            buf.push(b'\n');
+        }
     }
 
     loop {
         button_processed.set_low();
-        button.wait_for_rising_edge().await;
+        button.wait_for_high().await;
         button_processed.set_high();
 
         trigger_count += 1;
@@ -114,7 +155,7 @@ async fn button_waiter(
         slot.send_done();
 
         button_processed.set_low();
-        button.wait_for_falling_edge().await;
+        button.wait_for_low().await;
         button_processed.set_high();
 
         trigger_count += 1;
@@ -128,11 +169,11 @@ async fn button_waiter(
 #[embassy_executor::task]
 async fn uart_writer(
     mut usart: Uart<'static, Async>,
-    mut receiver: zerocopy_channel::Receiver<'static, NoopRawMutex, ArrayString<32>>,
+    mut receiver: zerocopy_channel::Receiver<'static, NoopRawMutex, Buf>,
 ) {
     loop {
         let message = receiver.receive().await;
-        usart.write(message.as_bytes()).await.unwrap();
+        usart.write(&message).await.unwrap();
         message.receive_done();
     }
 }
@@ -140,4 +181,11 @@ async fn uart_writer(
 #[cortex_m_rt::exception]
 unsafe fn HardFault(_frame: &cortex_m_rt::ExceptionFrame) -> ! {
     panic!("hardfault");
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {
+        cortex_m::asm::bkpt();
+    }
 }
